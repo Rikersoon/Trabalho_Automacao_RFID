@@ -1,13 +1,36 @@
 # 🔧 Armário Inteligente de Ferramentas
 
-Sistema de controle de retirada e devolução de ferramentas com ESP32, RFID e servo motor.  
-Desenvolvido por **Henrique** **Lucas** e **Gustavo**.
+Sistema de controle de retirada e devolução de ferramentas com ESP32, RFID e servo motor, comunicando via protocolo **MQTT** sobre WiFi.  
+Desenvolvido por **Lucas** e **Gustavo**.
 
 ---
 
 ## 📋 Sobre o Projeto
 
-Uma pessoa se identifica com uma tag RFID pessoal, o servo motor abre a tranca do armário, as ferramentas são lidas por etiquetas RFID individuais e tudo é registrado em tempo real no PC via cabo USB. Após 35 segundos sem atividade, o armário trava automaticamente.
+O usuário se identifica com uma tag RFID pessoal. O ESP32 publica a requisição em um broker MQTT (Mosquitto). O app Python no PC decide se autoriza o acesso, aciona o servo motor para abrir a tranca e registra cada ferramenta retirada ou devolvida via etiquetas RFID individuais. Após 35 segundos de inatividade, o armário trava automaticamente.
+
+---
+
+## 🏗️ Arquitetura do Sistema
+
+```
+┌─────────────┐     WiFi / MQTT      ┌──────────────────┐     ┌─────────────────┐
+│  ESP32      │ ──── armario/req ──► │  Broker MQTT     │ ──► │  App Python     │
+│  WROOM-32   │ ◄─── armario/cmd ─── │  Mosquitto       │ ◄── │  (PC)           │
+│  + MFRC522  │ ──── armario/status ►│  10.70.xx.xx:1883│     │  app_armario.py │
+│  + Servo    │                      └──────────────────┘     └─────────────────┘
+└─────────────┘
+```
+
+---
+
+## 📡 Tópicos MQTT
+
+| Tópico | Publicador | Assinante | Mensagens |
+|---|---|---|---|
+| `armario/req` | ESP32 | App Python | `REQ_AUTH:<UID>` \| `REQ_TOOL:<UID>` |
+| `armario/cmd` | App Python | ESP32 | `CMD:OPEN:<UID>:<NOME>` \| `CMD:DENIED` \| `CMD:TOOL_OK` \| `CMD:REG_OK` |
+| `armario/status` | ESP32 | App Python | `PRONTO` \| `TIMEOUT` \| `FECHADO_VOLUNTARIO` |
 
 ---
 
@@ -17,9 +40,9 @@ Uma pessoa se identifica com uma tag RFID pessoal, o servo motor abre a tranca d
 |---|---|
 | Microcontrolador | ESP32 WROOM-32 (DevKit V1) |
 | Módulo RFID | MFRC522 Mifare 13,56 MHz |
-| Servo Motor | SG90 — fios laranja / vermelho / Marrom |
+| Servo Motor | SG90 — fios laranja / vermelho / branco |
 | Tags RFID | Mifare Classic 1K |
-| Conexão PC | Cabo USB (também alimenta o ESP32) |
+| Rede | WiFi 802.11 b/g/n (mesma rede do PC com o broker) |
 
 ---
 
@@ -53,7 +76,7 @@ Uma pessoa se identifica com uma tag RFID pessoal, o servo motor abre a tranca d
 |---|---|---|
 | Lucas | `42A66C06` | Usuário |
 | Gustavo | `61E30417` | Usuário |
-| Alicate | `D0C8CD3D` | Ferramenta |
+| Multímetro | `D0C8CD3D` | Ferramenta |
 | Trena | `C038CE3D` | Ferramenta |
 | Martelo | `60C2CD3D` | Ferramenta |
 
@@ -63,8 +86,8 @@ Uma pessoa se identifica com uma tag RFID pessoal, o servo motor abre a tranca d
 
 ```
 armario-inteligente/
-├── firmware_armario_final.ino    # Código do ESP32
-├── app_armario_final.py          # Aplicativo Python (PC)
+├── firmware4.ino                 # Código do ESP32 (WiFi + MQTT + RFID + Servo)
+├── app_armario.py                # Aplicativo Python com interface gráfica
 ├── usuarios.json                 # Cadastro de usuários (gerado automaticamente)
 ├── ferramentas.json              # Cadastro de ferramentas (gerado automaticamente)
 ├── status_ferramentas.json       # Estado atual de cada ferramenta (gerado automaticamente)
@@ -73,51 +96,60 @@ armario-inteligente/
 
 ---
 
-## ⚙️ Como Funciona
+## 🚀 Instalação e Uso
 
-### Protocolo Serial (ESP32 ↔ PC via USB a 115200 baud)
+### 1. Instalar o Broker MQTT — Mosquitto
 
-**ESP32 → PC**
+**Windows:**
 ```
-STATUS:PRONTO        → ESP32 inicializou e está pronto
-STATUS:TIMEOUT       → Sessão encerrada por inatividade
-STATUS:FECHADO_VOL   → Usuário fechou passando a própria tag
-REQ_AUTH:<UID>       → Pede autenticação de usuário
-REQ_TOOL:<UID>       → Pede registro de ferramenta
-```
-
-**PC → ESP32**
-```
-CMD:OPEN:<UID>:<NOME> → Acesso autorizado, abre a tranca
-CMD:DENIED            → Acesso negado
-CMD:TOOL_OK           → Ferramenta registrada, renova o timer
-CMD:REG_OK            → Cadastro aceito
+1. Baixe em: mosquitto.org/download
+2. Instale e abra o Prompt de Comando como Administrador
+3. Crie o arquivo mosquitto.conf com o conteúdo abaixo
+4. Inicie o broker
 ```
 
-### Fluxo de Retirada
-1. Usuário aproxima a tag pessoal → ESP32 envia `REQ_AUTH`
-2. Python verifica `usuarios.json` → responde `CMD:OPEN`
-3. Servo gira para 0° (destravado)
-4. Usuário aproxima a tag da ferramenta → ESP32 envia `REQ_TOOL`
-5. Python registra **RETIRADA** em `logs.txt` → responde `CMD:TOOL_OK`
-6. Após 35s sem leitura → `STATUS:TIMEOUT` → servo trava (90°)
+**mosquitto.conf:**
+```conf
+listener 1883
+allow_anonymous true
+```
 
-### Fluxo de Devolução
-1. Usuário se identifica → servo abre
-2. Aproxima a tag da ferramenta → Python alterna status → registra **DEVOLUÇÃO**
-3. Usuário passa a própria tag novamente → `STATUS:FECHADO_VOL` → servo trava
+**Iniciar o broker:**
+```bash
+mosquitto -c mosquitto.conf -v
+```
+
+Deixe este terminal aberto enquanto usar o sistema.
 
 ---
 
-## 🚀 Instalação e Uso
+### 2. Descobrir o IP do PC
 
-### 1. Pré-requisitos
+Abra o **Prompt de Comando** e execute:
+```bash
+ipconfig
+```
+Anote o **IPv4** da rede WiFi. Exemplo: `10.70.xx.xx`
 
-- [Arduino IDE 2.x](https://www.arduino.cc/en/software)
-- Python 3.x
-- Suporte ESP32 instalado no Arduino IDE
+---
 
-### 2. Configurar o Arduino IDE
+### 3. Configurar o IP nos dois arquivos
+
+**firmware4.ino:**
+```cpp
+const char* WIFI_SSID     = "NOME_DA_REDE";
+const char* WIFI_PASSWORD = "SENHA_DA_REDE";
+const char* MQTT_BROKER   = "10.70.xx.xx"; // IP do seu PC
+```
+
+**app_armario.py:**
+```python
+MQTT_BROKER = "10.70.xx.xx"  # IP do seu PC
+```
+
+---
+
+### 4. Instalar suporte ao ESP32 no Arduino IDE
 
 Adicione em **File → Preferences → Additional boards manager URLs**:
 ```
@@ -125,14 +157,19 @@ https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32
 ```
 
 Instale as bibliotecas em **Sketch → Include Library → Manage Libraries**:
-- `MFRC522` — GithubCommunity
-- `ESP32Servo` — Kevin Harrington
-- `ArduinoJson` — Benoit Blanchon (v6.x)
 
-### 3. Gravar o Firmware
+| Biblioteca | Autor |
+|---|---|
+| MFRC522 | GithubCommunity |
+| ESP32Servo | Kevin Harrington |
+| PubSubClient | Nick O'Leary |
+
+---
+
+### 5. Gravar o Firmware
 
 ```
-1. Abra firmware_armario_final.ino no Arduino IDE
+1. Abra firmware4.ino no Arduino IDE
 2. Tools → Board → ESP32 Arduino → ESP32 Dev Module
 3. Tools → Port → COM7 (ou a porta que aparecer)
 4. Clique em Upload (→)
@@ -140,50 +177,86 @@ Instale as bibliotecas em **Sketch → Include Library → Manage Libraries**:
 5. Aguarde "Done uploading"
 ```
 
-### 4. Instalar dependência Python
+---
+
+### 6. Instalar dependência Python
 
 ```bash
-pip install pyserial
+pip install paho-mqtt
 ```
-
-### 5. Rodar o App
-
-```bash
-python app_armario_final.py
-```
-
-> ⚠️ **Importante:** feche o Serial Monitor do Arduino IDE antes de rodar o app.
-
-1. Selecione a porta **COM7** na janela de conexão
-2. Clique em **Conectar e Abrir Sistema**
-3. Aguarde a mensagem `ESP32 online e pronto para uso`
 
 ---
 
-## 📂 Cadastro de Novos Itens
+### 7. Rodar o App
 
-Pelo app Python:
+```bash
+python app_armario.py
+```
+
+Aguarde a mensagem na interface:
+```
+Armário Online e pronto para uso.
+```
+
+> ⚠️ O Mosquitto precisa estar rodando **antes** de ligar o ESP32 e antes de abrir o app.
+
+---
+
+## 🔄 Fluxo de Uso
+
+### Retirada de Ferramenta
+
+| Passo | Ação | Tópico | Mensagem |
+|---|---|---|---|
+| 1 | Usuário aproxima tag pessoal | `armario/req` | `REQ_AUTH:42A66C06` |
+| 2 | Python autoriza | `armario/cmd` | `CMD:OPEN:42A66C06:Lucas` |
+| 3 | Servo abre (0°) | — | — |
+| 4 | Aproxima tag da ferramenta | `armario/req` | `REQ_TOOL:60C2CD3D` |
+| 5 | Python registra RETIRADA | `armario/cmd` | `CMD:TOOL_OK` |
+| 6 | 35s sem leitura | `armario/status` | `TIMEOUT` |
+| 7 | Servo trava (90°) | — | — |
+
+### Encerramento Voluntário
+
+O usuário passa a própria tag novamente com a porta aberta → ESP32 publica `FECHADO_VOLUNTARIO` → servo trava imediatamente.
+
+### Cadastro de Novo Item pelo App
+
 1. Digite o nome no campo **"Nome para Registro"**
 2. Clique em **"Cadastrar Novo Usuário"** ou **"Cadastrar Nova Ferramenta"**
 3. Aproxime a tag RFID nova do módulo
-4. O UID é capturado e salvo automaticamente no JSON correspondente
+4. O UID é capturado via MQTT e salvo automaticamente no JSON correspondente
 
 ---
 
 ## 📄 Exemplo de logs.txt
 
 ```
-[01/07/2026 08:30:15] Acesso liberado — Lucas (UID: 42A66C06)
-[01/07/2026 08:30:22] RETIRADA — Ferramenta: Martelo | Usuário: Lucas | UID: 60C2CD3D
-[01/07/2026 08:31:30] Sessão de Lucas encerrada por timeout.
-[01/07/2026 09:00:44] Acesso liberado — Gustavo (UID: 61E30417)
-[01/07/2026 09:00:51] DEVOLUÇÃO — Ferramenta: Martelo | Usuário: Gustavo | UID: 60C2CD3D
+[01/07/2026 08:30:15] Acesso liberado: Lucas (UID: 42A66C06)
+[01/07/2026 08:30:22] Ferramenta Martelo RETIRADA
+[01/07/2026 08:31:30] Sessão encerrada por inatividade.
+[01/07/2026 09:00:44] Acesso liberado: Gustavo (UID: 61E30417)
+[01/07/2026 09:00:51] Ferramenta Martelo DEVOLUÇÃO
 ```
+
+---
+
+## 🔧 Troubleshooting
+
+| Problema | Causa | Solução |
+|---|---|---|
+| ESP32 não conecta ao WiFi | SSID ou senha errados | Verifique `WIFI_SSID` e `WIFI_PASSWORD` no firmware |
+| App não recebe mensagens | Mosquitto não está rodando | Execute `mosquitto -c mosquitto.conf -v` |
+| "Falha ao conectar ao broker" | IP errado | Rode `ipconfig` e atualize o IP nos dois arquivos |
+| RFID não lê tags | MOSI e MISO trocados | GPIO 23 = MOSI, GPIO 19 = MISO |
+| Servo não se move | GPIO ou alimentação errada | Fio laranja → GPIO 13, vermelho → 3V3 |
+| ESP32 reseta ao mover servo | Pico de corrente em 3V3 | Adicione capacitor 100µF entre 3V3 e GND próximo ao servo |
 
 ---
 
 ## ⚠️ Observações
 
-- O servo SG90 é alimentado pelo pino **3V3 do ESP32**.
-- Os ângulos `SERVO_TRAVADO = 90` e `SERVO_DESTRAVADO = 0` podem ser ajustados no firmware conforme a mecânica da tranca.
-- O sistema funciona **100% offline** — não requer WiFi ou servidor. A comunicação é feita pelo cabo USB entre o ESP32 e o PC.
+- O ESP32 e o PC precisam estar na **mesma rede WiFi** para o MQTT funcionar.
+- O broker Mosquitto precisa estar **rodando antes** de ligar o ESP32 e antes de abrir o app Python.
+- O servo SG90 é alimentado pelo pino **3V3 do ESP32**. Para trancas leves funciona bem, mas o torque é reduzido em relação à tensão nominal de 5V.
+- Os ângulos `SERVO_TRAVADO = 90` e `SERVO_DESTRAVADO = 0` podem ser ajustados no firmware conforme a mecânica da tranca física.
